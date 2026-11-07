@@ -1,0 +1,33 @@
+senew-emu -- a QEMU machine model of the Sony Ericsson W580i
+Copyright (C) 2026 the senew-emu authors (semakers)
+
+Licensed under the GNU General Public License, version 2 or (at your option) any later version.
+See LICENSE. Each source file carries "SPDX-License-Identifier: GPL-2.0-or-later".
+
+Credits / third-party code
+--------------------------
+* QEMU (https://www.qemu.org), (C) Fabrice Bellard and the QEMU contributors, GPL-2.0-or-later (per file).
+  Not included in this repository: scripts/build.sh downloads the official qemu-10.2.2.tar.xz and verifies its SHA-256.
+  The files in qemu/hw/arm/ are built on top of QEMU's internal APIs.
+
+* SEW800iEmu (https://github.com/saup/SEW800iEmu), by saup, GPL-2.0-or-later: a QEMU machine model of the Sony Ericsson
+  W800i (DB2010 platform). Parts of the W580 (DB2020) model were ported from it and keep their GPL-2.0-or-later terms
+  and credit to their author: the battery-backed RTC (w580-rtc.inc), the I2C master and the power-management companion
+  chip register bank (w580-i2c.inc), the UART and DSP-related register handling (w580-extra.inc, w580-perif.inc); the machine
+  file (w580.c) follows the method of that project's machine but was rewritten. Please see that project for its own credits.
+
+What is NOT here
+----------------
+No firmware, flash/file-system dump, executable, font or graphic from Sony Ericsson or any other manufacturer.
+One file of the development tree, qemu/hw/arm/w580-panel-tabla.inc, is generated there from the display-driver
+configuration file of a real handset (the factory LCD initialisation scripts). It is deliberately replaced in this
+repository by a stub that keeps only the four panel-variant names/ids (so that the panel's identification registers
+still answer); the scripts are empty and the model's script cross-checks (strict mode only) are skipped. The pixel
+output with default options is identical to the development tree's (checked by comparing screenshots).
+Two small edits to w580-panel.inc go with that stub (marked "(árbol público)").
+
+Trademarks
+----------
+Sony, Sony Ericsson, W580i and other names mentioned are trademarks or registered trademarks of their respective
+owners. This project is not affiliated with, endorsed by or supported by them; the names are used only to identify
+the hardware the model is about.

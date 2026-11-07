@@ -1,0 +1,130 @@
+# Builds qemu-system-arm (with the W580 machine) for Linux x86_64.
+#   - every push / pull request: build + smoke test, artifacts kept 14 days
+#   - a pushed tag "v*": the same, plus a GitHub release with the tarballs and their SHA-256 files
+# Two flavours of the same binary, because the target is a minimal Fedora container without GLib/pixman:
+#   static    fully static binary (best; the job is allowed to fail if the static libraries are missing)
+#   bundled   dynamic binary + the non-glibc shared libraries it needs in ./lib, rpath $ORIGIN/lib (always works)
+# The workflow was written without being able to run it locally: the first run on GitHub is the real test.
+name: build
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  QEMU_VERSION: "10.2.2"
+
+jobs:
+  static:
+    runs-on: ubuntu-24.04
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install build dependencies (with static libraries)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential ninja-build pkg-config python3 python3-venv python3-pip xz-utils curl ca-certificates file \
+            libglib2.0-dev libpixman-1-dev zlib1g-dev libpcre2-dev libffi-dev libmount-dev libselinux1-dev
+      - name: Build (static)
+        run: JOBS="$(nproc)" NICE=0 scripts/build.sh --static
+      - name: Inspect
+        run: |
+          file build/qemu-system-arm
+          ldd build/qemu-system-arm || true       # a static binary prints "not a dynamic executable"
+          ./build/qemu-system-arm --version
+          ./build/qemu-system-arm -M w580,help | head -n 20
+      - name: "Smoke test (blank flash - the machine starts and answers QMP)"
+        run: |
+          python3 -c "open('blank.bin','wb').write(b'\xff' * (64 << 20))"
+          python3 scripts/smoke.py build/qemu-system-arm blank.bin --seconds 3
+      - name: Package
+        run: |
+          d="senew-emu-qemu-system-arm-${QEMU_VERSION}-linux-x86_64-static"
+          mkdir "$d"
+          strip -o "$d/qemu-system-arm" build/qemu-system-arm
+          cp LICENSE NOTICE "$d/"
+          tar -czf "$d.tar.gz" "$d"
+          sha256sum "$d.tar.gz" > "$d.tar.gz.sha256"
+          ls -l "$d.tar.gz"*
+      - uses: actions/upload-artifact@v4
+        with:
+          name: static
+          path: senew-emu-*.tar.gz*
+          retention-days: 14
+
+  bundled:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential ninja-build pkg-config python3 python3-venv python3-pip xz-utils curl ca-certificates file \
+            libglib2.0-dev libpixman-1-dev zlib1g-dev patchelf
+      - name: Build (dynamic)
+        run: JOBS="$(nproc)" NICE=0 scripts/build.sh
+      - name: Inspect
+        run: |
+          file build/qemu-system-arm
+          ldd build/qemu-system-arm
+          ./build/qemu-system-arm --version
+          ./build/qemu-system-arm -M w580,help | head -n 20
+      - name: "Smoke test (blank flash - the machine starts and answers QMP)"
+        run: |
+          python3 -c "open('blank.bin','wb').write(b'\xff' * (64 << 20))"
+          python3 scripts/smoke.py build/qemu-system-arm blank.bin --seconds 3
+      - name: Package with its shared libraries
+        run: |
+          d="senew-emu-qemu-system-arm-${QEMU_VERSION}-linux-x86_64-bundled"
+          mkdir -p "$d/lib"
+          strip -o "$d/qemu-system-arm" build/qemu-system-arm
+          # everything the binary needs except glibc itself (a Fedora/Debian/Ubuntu host provides it)
+          ldd build/qemu-system-arm | awk '/=> \// {print $3}' | while read -r lib; do
+            case "$(basename "$lib")" in
+              libc.so.*|libm.so.*|libpthread.so.*|libdl.so.*|librt.so.*|libutil.so.*|libresolv.so.*|ld-linux*|libgcc_s.so.*) ;;
+              *) cp -L "$lib" "$d/lib/" ;;
+            esac
+          done
+          patchelf --set-rpath '$ORIGIN/lib' "$d/qemu-system-arm"
+          ls -l "$d/lib"
+          ldd "$d/qemu-system-arm"
+          "$d/qemu-system-arm" -M w580,help | head -n 3
+          cp LICENSE NOTICE "$d/"
+          tar -czf "$d.tar.gz" "$d"
+          sha256sum "$d.tar.gz" > "$d.tar.gz.sha256"
+          ls -l "$d.tar.gz"*
+      - uses: actions/upload-artifact@v4
+        with:
+          name: bundled
+          path: senew-emu-*.tar.gz*
+          retention-days: 14
+
+  release:
+    if: ${{ always() && startsWith(github.ref, 'refs/tags/v') && needs.bundled.result == 'success' }}
+    needs: [bundled, static]
+    # runs even if the (optional) static job failed
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - name: Create the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          ls -l dist
+          gh release create "$GITHUB_REF_NAME" dist/* \
+            --repo "$GITHUB_REPOSITORY" \
+            --title "senew-emu $GITHUB_REF_NAME (QEMU ${QEMU_VERSION}, W580 machine)" \
+            --notes "qemu-system-arm ${QEMU_VERSION} with the W580 machine, Linux x86_64. Use the *static* tarball if present, otherwise the *bundled* one (it carries the GLib/pixman libraries it needs). Verify with the .sha256 files. New, experimental project: use at your own risk. No firmware from any manufacturer is included."
